@@ -6,18 +6,20 @@ import difflib
 OLD_JSCB_CMD = "python3 ~/HGT/jscb/JSCB/run_jscb.py --genbank {infile} -o ~/HGT/jscb/JSCB/"
 NEW_JSCB_CMD = "python3 src/jscb_new.py {infile} -o outputs"
 
-genbanks = list(Path("genbanks").glob('*.gbk'))
+genbanks = list(Path("tests/genbanks").glob('*.gbk'))
 
 OLD_JSCB_DIR = Path("~/HGT/jscb/JSCB/").expanduser()
+
+Path("res").mkdir(exist_ok=True)
 
 gi_diff = open("res/gi_diff.tsv", 'w')
 hgt_diff = open("res/hgt_diff.tsv", 'w')
 
 for gbk in genbanks:
-    subprocess.run(OLD_JSCB_CMD.format(gbk), shell=True, check=True)
+    subprocess.run(OLD_JSCB_CMD.format(infile = str(gbk)), shell=True, check=True)
 
     
-    subprocess.run(NEW_JSCB_CMD.format(gbk), shell=True, check=True)
+    subprocess.run(NEW_JSCB_CMD.format(infile = str(gbk)), shell=True, check=True)
     
     with open(OLD_JSCB_DIR / "genomic_islands_summary.tsv") as old, open("outputs/genomic_islands_summary.tsv") as new:
         old_lines = old.readlines()
@@ -26,8 +28,8 @@ for gbk in genbanks:
     diff = difflib.unified_diff(
         old_lines,
         new_lines,
-        fromfile= "OLD",
-        tofile= "NEW"
+        fromfile= f"{gbk.stem} OLD",
+        tofile= f"{gbk.stem} NEW"
     )
     gi_diff.writelines(diff)
     
@@ -38,8 +40,8 @@ for gbk in genbanks:
     diff = difflib.unified_diff(
         old_lines,
         new_lines,
-        fromfile= "OLD",
-        tofile= "NEW"
+        fromfile= f"{gbk.stem} OLD",
+        tofile= f"{gbk.stem} NEW"
     )
     hgt_diff.writelines(diff)
     

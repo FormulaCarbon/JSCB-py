@@ -508,7 +508,7 @@ def rentrotot_cluster_cluster(
 	return -val
 
 def write_output_gi(
-	out_path: str,
+	out_path: Path,
 	gene_to_cluster: List[int],
 	cluster_sizes: Dict[int, int],
 	gene_lena: List[int],
@@ -525,8 +525,8 @@ def write_output_gi(
 			f.write(f"{g}\t{cid}\t{csize}\t{gene_lena[g]}\n")
 
 
-def call_genomic_islands_like_jscb_py(
-	out_tsv: str,
+def call_genomic_islands(
+	out_tsv: Path,
 	gene_to_cluster: List[int],
 	genes: List[Gene],
 	rrna: List[Tuple[int, int]],

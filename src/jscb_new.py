@@ -25,7 +25,7 @@ def main(genbank: Path, output: Path, verbose: bool) -> int:
 			combined_record = seq_record
 		else:
 			combined_record = combined_record + rRNA_record + rRNA_record + rRNA_record + rRNA_record + rRNA_record + rRNA_record + rRNA_record + rRNA_record + rRNA_record + rRNA_record + seq_record
-	combined_gbk_path = Path('combined.gbk')
+	combined_gbk_path = output / 'combined.gbk'
 	if combined_record is None:
 		print("combined_record is None")
 		return 1
@@ -100,12 +100,12 @@ def main(genbank: Path, output: Path, verbose: bool) -> int:
 			f"native_cluster={native_cid} native_size={native_size}",
 		)
 
-	write_output_gi("JSCB_output.gi", gene_to_cluster_all, cluster_sizes, gene_lena)
-	call_genomic_islands_like_jscb_py("JSCB_output.tsv", gene_to_cluster_all, genes_all, rrna)
+	write_output_gi(output / "JSCB_output.gi", gene_to_cluster_all, cluster_sizes, gene_lena)
+	call_genomic_islands(output / "JSCB_output.tsv", gene_to_cluster_all, genes_all, rrna)
 	
 	# Post Processing
 	genomic_islands = {}
-	jscb_output_path = 'JSCB_output.tsv'
+	jscb_output_path = output / 'JSCB_output.tsv'
 	with open(jscb_output_path) as jscb_output:
 		for i,line in enumerate(jscb_output):
 			if i > 0:
@@ -163,7 +163,7 @@ def main(genbank: Path, output: Path, verbose: bool) -> int:
 							genomic_island_genes_by_contig[gi_name][contig_name] = [ locus_tag ]
 
 	# Now we make a human-readable output table
-	output_table_path ='genomic_islands_summary.tsv'
+	output_table_path = output / 'genomic_islands_summary.tsv'
 	output_table = open(output_table_path, 'w')
 	output_table.write('GI_ID\tcontig\tstart\tend\tgenes\n')
 
@@ -187,10 +187,10 @@ def main(genbank: Path, output: Path, verbose: bool) -> int:
 	output_table.close()
 
 	# We also make a human readable version of JSCB_output.gi
-	output_table_path = 'hgt_genes_summary.tsv'
+	output_table_path = output / 'hgt_genes_summary.tsv'
 	output_table = open(output_table_path, 'w')
 	output_table.write('locus_tag\tcluster_id\tcluster_size\tgene_length\n')
-	jscb_output_path = 'JSCB_output.gi'
+	jscb_output_path = output / 'JSCB_output.gi'
 
 	with open(jscb_output_path) as jscb_output:
 		jscb_output.readline() # throw away header
