@@ -27,7 +27,6 @@ from typing import List, Tuple, Dict, Optional
 import os
 
 from Bio import SeqIO
-from scipy.special import gammaln, gammainc
 
 
 # -------------------------
@@ -58,7 +57,7 @@ def _gammln(xx: float) -> float:
 
 def _gser(a: float, x: float, itmax: int = 9000, eps: float = 3.0e-7) -> float:
 	# Series representation of P(a, x)
-	gln = gammaln(a)
+	gln = _gammln(a)
 	if x <= 0.0:
 		return 0.0
 	ap = a
@@ -75,7 +74,7 @@ def _gser(a: float, x: float, itmax: int = 9000, eps: float = 3.0e-7) -> float:
 
 def _gcf(a: float, x: float, itmax: int = 9000, eps: float = 3.0e-7, fpmin: float = 1.0e-30) -> float:
 	# Continued fraction representation of Q(a, x) = 1 - P(a, x)
-	gln = gammaln(a)
+	gln = _gammln(a)
 	b = x + 1.0 - a
 	c = 1.0 / fpmin
 	d = 1.0 / b
@@ -117,7 +116,7 @@ def sig(rnn: float, djsmx: float) -> float:
 	  sig = gammp(30, snn)
 	"""
 	snn = rnn * math.log(2.0) * djsmx
-	return gammainc(30.0, snn)
+	return gammp(30.0, snn)
 
 
 # -------------------------
