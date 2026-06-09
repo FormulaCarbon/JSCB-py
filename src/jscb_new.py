@@ -3,7 +3,7 @@ from pathlib import Path
 
 from helpers import *
 
-def main(genbank: Path, output: Path, verbose: bool) -> int:
+def main(genbank: Path, output: Path, verbose: bool, gpu: bool, gpu_batch_size: int) -> int:
 	output.mkdir(exist_ok=True, parents=True)
 	script_path =  Path(__file__).parent.resolve()
  
@@ -60,6 +60,9 @@ def main(genbank: Path, output: Path, verbose: bool) -> int:
 		thres2=0.0,
 		thres3=0.995,
 		clusthres=1.0,
+		use_gpu=gpu,
+		gpu_batch_size=max(1, gpu_batch_size),
+		verbose=verbose,
 	)
 
 	# map clustered genes_used back to genes_all by exact coordinates+strand
@@ -158,7 +161,9 @@ if __name__ == "__main__":
     parser.add_argument("genbank", type=Path, help="Path to annotated genbank")
     parser.add_argument("-o", "--output", type=Path, default="/", help="Path to output directory")
     parser.add_argument("-v", "--verbose", action='store_true', help="Enable verbose logging")
+    parser.add_argument("--gpu", action='store_true', help="Enable GPU-accelerated merge-step divergence checks when CuPy/CUDA is available")
+    parser.add_argument("--gpu-batch-size", type=int, default=64, help="Number of cluster-pairs to process per GPU batch during merge step")
     
     args = parser.parse_args()
     
-    main(args.genbank, args.output, args.verbose)
+    main(args.genbank, args.output, args.verbose, args.gpu, args.gpu_batch_size)

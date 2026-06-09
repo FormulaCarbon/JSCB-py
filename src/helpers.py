@@ -1,5 +1,5 @@
 import math
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Set, Optional
 import random
 from pathlib import Path
 
@@ -7,11 +7,29 @@ import numpy as np
 from scipy.special import gammainc
 from Bio import SeqIO
 
+try:
+	import cupy as cp
+except Exception:
+	cp = None
+
 from gene import Gene
 
 _BASE_TO_IY = {'A': 1, 'T': 2, 'C': 3, 'G': 4}
 _COMP_IY = {1: 2, 2: 1, 3: 4, 4: 3}
 _INV_LOG2 = 1.0 / math.log(2.0)
+
+def _get_cupy_module():
+	if cp is None:
+		return None
+	try:
+		if cp.cuda.runtime.getDeviceCount() < 1:
+			return None
+	except Exception:
+		return None
+	return cp
+
+def _build_synonymous_codon_groups(iaa: List[List[int]], iab: List[int]) -> List[np.ndarray]:
+	return [np.array(iaa[aa_idx][:iab[aa_idx]], dtype=np.int32) for aa_idx in range(20)]
 
 def sig(rnn_array, djsmx_array):
 	snn = rnn_array * math.log(2.0) * djsmx_array
@@ -254,6 +272,49 @@ def sanitize_genome(seq: str) -> str:
 			out.append(random.choice(nucs))
 	return "".join(out)
 
+def _divgn_cluster_vs_many_gpu(
+	xp,
+	c1_codon: np.ndarray,
+	c1_amino: np.ndarray,
+	c1_len: int,
+	c2_codon_batch: np.ndarray,
+	c2_amino_batch: np.ndarray,
+	c2_len_batch: np.ndarray,
+	synonymous_codons: List[np.ndarray],
+) -> np.ndarray:
+	c1_codon_xp = xp.asarray(c1_codon, dtype=xp.float64)
+	c1_amino_xp = xp.asarray(c1_amino, dtype=xp.float64)
+	c2_codon_xp = xp.asarray(c2_codon_batch, dtype=xp.float64)
+	c2_amino_xp = xp.asarray(c2_amino_batch, dtype=xp.float64)
+	c2_len_xp = xp.asarray(c2_len_batch, dtype=xp.float64)
+	c1_len_f = float(c1_len)
+	lengtot_xp = c1_len_f + c2_len_xp
+
+	ent1 = xp.float64(0.0)
+	ent2 = xp.zeros(c2_len_xp.shape[0], dtype=xp.float64)
+	enttot = xp.zeros(c2_len_xp.shape[0], dtype=xp.float64)
+
+	for codons_np in synonymous_codons:
+		codons = xp.asarray(codons_np)
+		first = int(codons_np[0])
+
+		c1_den = c1_amino_xp[codons]
+		c1_pp = c1_codon_xp[codons] / c1_den
+		ent1 += xp.sum(c1_pp * xp.log(c1_pp)) * (c1_amino_xp[first] / c1_len_f)
+
+		c2_den = c2_amino_xp[:, codons]
+		c2_pp = c2_codon_xp[:, codons] / c2_den
+		ent2 += xp.sum(c2_pp * xp.log(c2_pp), axis=1) * (c2_amino_xp[:, first] / c2_len_xp)
+
+		denom_tot = c1_amino_xp[first] + c2_amino_xp[:, first]
+		pp_tot = (c1_codon_xp[codons][None, :] + c2_codon_xp[:, codons]) / denom_tot[:, None]
+		enttot += xp.sum(pp_tot * xp.log(pp_tot), axis=1) * (denom_tot / lengtot_xp)
+
+	divergence_xp = _INV_LOG2 * ((-enttot) - ((c1_len_f * (-ent1) + c2_len_xp * (-ent2)) / lengtot_xp))
+	if xp is np:
+		return divergence_xp
+	return xp.asnumpy(divergence_xp)
+
 def cluster_jscb(
     ncodonfreq: np.ndarray,
     naminofreq: np.ndarray,
@@ -266,6 +327,9 @@ def cluster_jscb(
     thres2: float = 0.0,
     thres3: float = 0.995,
     clusthres: float = 1.0,
+	use_gpu: bool = False,
+	gpu_batch_size: int = 64,
+	verbose: bool = False,
 ):
 
     ngenes = len(gene_len_internal) - 1
@@ -275,6 +339,11 @@ def cluster_jscb(
     # Precompute AA mapping
     # -------------------------
     aa_first = np.array([iaa[i][0] for i in range(20)], dtype=np.int32)
+    synonymous_codons = _build_synonymous_codon_groups(iaa, iab)
+    gpu_xp = _get_cupy_module() if use_gpu else None
+    gpu_enabled = gpu_xp is not None
+    if use_gpu and (not gpu_enabled) and verbose:
+        print("GPU requested but unavailable; falling back to CPU.")
 
     # -------------------------
     # Cluster state (FAST)
@@ -344,56 +413,85 @@ def cluster_jscb(
         changed = False
 
         for i in range(1, nclus):
-            for j in range(i + 1, nclus + 1):
+            if cluster_len[i] == 0:
+                continue
+            candidate_js = [j for j in range(i + 1, nclus + 1) if cluster_len[j] > 0]
+            if not candidate_js:
+                continue
 
-                if cluster_len[i] == 0 or cluster_len[j] == 0:
-                    continue
+            merged_with_j: Optional[int] = None
 
-                lengtot = cluster_len[i] + cluster_len[j]
-
-                ent_i = cluster_entropy[i]
-                if np.isnan(ent_i):
-                    ent_i = rentro_cluster(cluster_codon[i], cluster_amino[i], cluster_len[i], iaa, iab)
-                    cluster_entropy[i] = ent_i
-
-                ent_j = cluster_entropy[j]
-                if np.isnan(ent_j):
-                    ent_j = rentro_cluster(cluster_codon[j], cluster_amino[j], cluster_len[j], iaa, iab)
-                    cluster_entropy[j] = ent_j
-
-                djs = _INV_LOG2 * (
-                    rentrotot_cluster_cluster(
-                        cluster_codon[i], cluster_amino[i],
-                        cluster_codon[j], cluster_amino[j],
-                        lengtot, iaa, iab,
+            if gpu_enabled and len(candidate_js) >= 2:
+                for start in range(0, len(candidate_js), max(1, gpu_batch_size)):
+                    batch_js = candidate_js[start:start + max(1, gpu_batch_size)]
+                    djs_vals = _divgn_cluster_vs_many_gpu(
+                        gpu_xp,
+                        cluster_codon[i],
+                        cluster_amino[i],
+                        int(cluster_len[i]),
+                        cluster_codon[batch_js],
+                        cluster_amino[batch_js],
+                        cluster_len[batch_js],
+                        synonymous_codons,
                     )
-                    - ((cluster_len[i] * ent_i + cluster_len[j] * ent_j) / float(lengtot))
-                )
+                    for idx, j in enumerate(batch_js):
+                        lengtot = cluster_len[i] + cluster_len[j]
+                        pbc = sig(float(lengtot), float(djs_vals[idx]))
+                        if pbc < thres3:
+                            merged_with_j = j
+                            break
+                    if merged_with_j is not None:
+                        break
+            else:
+                for j in candidate_js:
+                    lengtot = cluster_len[i] + cluster_len[j]
 
-                pbc = sig(float(lengtot), djs)
+                    ent_i = cluster_entropy[i]
+                    if np.isnan(ent_i):
+                        ent_i = rentro_cluster(cluster_codon[i], cluster_amino[i], cluster_len[i], iaa, iab)
+                        cluster_entropy[i] = ent_i
 
-                if pbc < thres3:
+                    ent_j = cluster_entropy[j]
+                    if np.isnan(ent_j):
+                        ent_j = rentro_cluster(cluster_codon[j], cluster_amino[j], cluster_len[j], iaa, iab)
+                        cluster_entropy[j] = ent_j
 
-                    # merge j -> i (FAST vectorized update)
-                    clusters[i - 1].extend(clusters[j - 1])
+                    djs = _INV_LOG2 * (
+                        rentrotot_cluster_cluster(
+                            cluster_codon[i], cluster_amino[i],
+                            cluster_codon[j], cluster_amino[j],
+                            lengtot, iaa, iab,
+                        )
+                        - ((cluster_len[i] * ent_i + cluster_len[j] * ent_j) / float(lengtot))
+                    )
+                    pbc = sig(float(lengtot), djs)
+                    if pbc < thres3:
+                        merged_with_j = j
+                        break
 
-                    cluster_codon[i] += cluster_codon[j]
-                    cluster_amino[i] += cluster_amino[j]
-                    cluster_len[i] += cluster_len[j]
+            if merged_with_j is not None:
+                j = merged_with_j
 
-                    # invalidate j (NO deletion)
-                    cluster_codon[j].fill(0)
-                    cluster_amino[j].fill(0)
-                    cluster_len[j] = 0
-                    clusters[j - 1] = []
-                    cluster_entropy[i] = np.nan
-                    cluster_entropy[j] = np.nan
+                # merge j -> i (FAST vectorized update)
+                clusters[i - 1].extend(clusters[j - 1])
 
-                    for g in clusters[i - 1]:
-                        gene_to_cluster[g] = i
+                cluster_codon[i] += cluster_codon[j]
+                cluster_amino[i] += cluster_amino[j]
+                cluster_len[i] += cluster_len[j]
 
-                    changed = True
-                    break
+                # invalidate j (NO deletion)
+                cluster_codon[j].fill(0)
+                cluster_amino[j].fill(0)
+                cluster_len[j] = 0
+                clusters[j - 1] = []
+                cluster_entropy[i] = np.nan
+                cluster_entropy[j] = np.nan
+
+                for g in clusters[i - 1]:
+                    gene_to_cluster[g] = i
+
+                changed = True
+                break
 
             if changed:
                 break
