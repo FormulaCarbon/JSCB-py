@@ -1,10 +1,5 @@
 import argparse
 from pathlib import Path
-import os
-
-from scipy.special import gammaln
-import pandas as pd
-
 
 from helpers import *
 
@@ -104,63 +99,13 @@ def main(genbank: Path, output: Path, verbose: bool) -> int:
 	call_genomic_islands(output / "JSCB_output.tsv", gene_to_cluster_all, genes_all, rrna)
 	
 	# Post Processing
-	genomic_islands = {}
 	jscb_output_path = output / 'JSCB_output.tsv'
-	with open(jscb_output_path) as jscb_output:
-		for i,line in enumerate(jscb_output):
-			if i > 0:
-				line_list = line.rstrip().split('\t')
-				gi_name = line_list[0]
-				start_coordinate = int(line_list[1])
-				end_coordinate = int(line_list[2])
-				gi_set = set(range(start_coordinate, end_coordinate + 1))
-				genomic_islands[gi_name] = gi_set
-				
-	genomic_island_genes = dict() # keyed by GI name, holds sets of locus_tags
-	for gi_name in genomic_islands:
-		genomic_island_genes[gi_name] = set()
-
-	for seq_record in SeqIO.parse(combined_gbk_path, 'genbank'):
-		for feature in seq_record.features:
-			if feature.type == 'gene':
-				# Work out if the gene overlaps with any genomic islands
-				gene_coordinate_set = set(range(int(feature.location.start), int(feature.location.end) + 1))
-				locus_tag = feature.qualifiers['locus_tag'][0] # Here we take just the first value
-				for gi_name in genomic_islands:
-					if len(gene_coordinate_set.intersection(genomic_islands[gi_name])) > 0:
-						genomic_island_genes[gi_name].add(locus_tag)
-
-	# Now we go through the original genbank file, noting the coordinates of genes and which contigs they
-	# belong to. Note, we do not assume that genomic islands won't occur at contig boundaries because
-	# the JSCB program did not see where these boundaries are.
-	genomic_island_coordinates = dict() # Keyed by gi_name, then contig, holds two member list [lowest_coord, highest_coord] derived from component genes
-	genomic_island_genes_by_contig = dict() # Keyed by gi_name, then contig, holds lists of locus_tags
-
-	for gi_name in genomic_islands:
-		genomic_island_coordinates[gi_name] = dict()
-		genomic_island_genes_by_contig[gi_name] = dict()
-
-	for seq_record in SeqIO.parse(genbank, 'genbank'):
-		contig_name = seq_record.id
-		for feature in seq_record.features:
-			if feature.type == 'gene':
-				locus_tag = feature.qualifiers['locus_tag'][0]
-				for gi_name in genomic_island_genes:
-					if locus_tag in genomic_island_genes[gi_name]:
-						start_coordinate = int(feature.location.start)
-						end_coordinate = int(feature.location.end)
-						if contig_name in genomic_island_coordinates[gi_name]:
-							if start_coordinate < genomic_island_coordinates[gi_name][contig_name][0]:
-								genomic_island_coordinates[gi_name][contig_name][0] = start_coordinate
-							if end_coordinate > genomic_island_coordinates[gi_name][contig_name][1]:
-								genomic_island_coordinates[gi_name][contig_name][1] = end_coordinate
-						else:
-							genomic_island_coordinates[gi_name][contig_name] = [ start_coordinate, end_coordinate ]
-
-						if contig_name in genomic_island_genes_by_contig[gi_name]:
-							genomic_island_genes_by_contig[gi_name][contig_name].append(locus_tag)
-						else:
-							genomic_island_genes_by_contig[gi_name][contig_name] = [ locus_tag ]
+	genomic_islands = load_genomic_island_ranges(jscb_output_path)
+	genomic_island_genes = build_genomic_island_gene_map(combined_gbk_path, genomic_islands)
+	genomic_island_coordinates, genomic_island_genes_by_contig = build_genomic_island_contig_details(
+		genbank,
+		genomic_island_genes,
+	)
 
 	# Now we make a human-readable output table
 	output_table_path = output / 'genomic_islands_summary.tsv'
